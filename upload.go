@@ -125,13 +125,15 @@ func CompositeUpload(ctx context.Context, gcs *storage.Client, sourceFile *os.Fi
 	log.Printf("component uploads complete\n")
 
 	// compose the components into the desired object
-	ctx, cancel := context.WithTimeout(ctx, time.Second*10)
-	defer cancel()
-	doCompose(ctx, bucket, finalObject, components)
+	composeCtx, composeCtxCancel := context.WithTimeout(ctx, time.Second*50)
+	defer composeCtxCancel()
+	doCompose(composeCtx, bucket, finalObject, components)
 	log.Printf("compose complete\n")
 
 	// cleanup
-	doDeletes(ctx, bucket, components)
+	deleteCtx, deleteCtxCancel := context.WithTimeout(ctx, time.Second*50)
+	defer deleteCtxCancel()
+	doDeletes(deleteCtx, bucket, components)
 	log.Printf("deletes complete\n")
 
 	return fi.Size(), nil
