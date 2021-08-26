@@ -108,47 +108,16 @@ func CompositeUpload(ctx context.Context, gcs *storage.Client, sourceFile *os.Fi
 	offset := int64(0)
 	for componentNumber := int64(0); componentNumber < componentCount; componentNumber++ {
 		componentWG.Add(1)
-		go func(wg *sync.WaitGroup, cn int64, seekTo int64) {
-			defer wg.Done()
-
-			//client-per-goroutine. You shouldn't need this, but you do. They seem to share something.
-			g, err := storage.NewClient(ctx)
-			if err != nil {
-				panic(err)
-			}
-			defer g.Close()
-			b := g.Bucket(bucketName)
-
-			// set up component object & writer
-			componentName := tempPrefix + finalObject + "cmpnt_" + fmt.Sprint(cn)
-			object := b.Object(componentName)
-			components[cn] = componentName // we will need this later!
-			log.Printf("uploading gs://%v/%v\n", object.BucketName(), object.ObjectName())
-			c, cancel := context.WithTimeout(ctx, time.Second*50)
-			defer cancel()
-			objectWriter := object.NewWriter(c)
-
-			// get a unique file handle for this work
-			fh, err := os.Open(sourceFile.Name())
-			if err != nil {
-				panic(err)
-			}
-			defer fh.Close()
-
-			// seek and limit the reader
-			fh.Seek(seekTo, 0)
-			limitedFh := io.LimitReader(fh, componentSize)
-
-			// copy it on up
-			if _, err = io.Copy(objectWriter, limitedFh); err != nil {
-				panic(fmt.Errorf("io.Copy: %v", err))
-			}
-			if err := objectWriter.Close(); err != nil {
-				panic(fmt.Errorf("Writer.Close: %v", err))
-			}
-			log.Printf("uploaded gs://%v/%v\n", object.BucketName(), object.ObjectName())
-		}(&componentWG, componentNumber, offset)
-
+		go doComponentUpload(ctx, &componentWG, uploadSpec{
+			bucketName:      bucketName,
+			tempPrefix:      tempPrefix,
+			finalObject:     finalObject,
+			componentNumber: componentNumber,
+			componentSize:   componentSize,
+			components:      components,
+			offset:          offset,
+			sourceFileName:  sourceFile.Name(),
+		})
 		// next goroutine should use a range beginning at the end of the last
 		offset = offset + componentSize + 1
 	}
@@ -166,6 +135,59 @@ func CompositeUpload(ctx context.Context, gcs *storage.Client, sourceFile *os.Fi
 	log.Printf("deletes complete\n")
 
 	return fi.Size(), nil
+}
+
+type uploadSpec struct {
+	bucketName      string
+	tempPrefix      string
+	finalObject     string
+	componentNumber int64
+	componentSize   int64
+	components      []string
+	offset          int64
+	sourceFileName  string
+}
+
+// doComponentUpload uploads an object component to GCS.
+func doComponentUpload(ctx context.Context, wg *sync.WaitGroup, args uploadSpec) {
+	defer wg.Done()
+
+	//client-per-goroutine. You shouldn't need this, but you do. They seem to share something.
+	g, err := storage.NewClient(ctx)
+	if err != nil {
+		panic(err)
+	}
+	defer g.Close()
+	b := g.Bucket(args.bucketName)
+
+	// set up component object & writer
+	componentName := args.tempPrefix + args.finalObject + "cmpnt_" + fmt.Sprint(args.componentNumber)
+	object := b.Object(componentName)
+	args.components[args.componentNumber] = componentName // we will need this later!
+	log.Printf("uploading gs://%v/%v\n", object.BucketName(), object.ObjectName())
+	c, cancel := context.WithTimeout(ctx, time.Second*50)
+	defer cancel()
+	objectWriter := object.NewWriter(c)
+
+	// get a unique file handle for this work
+	fh, err := os.Open(args.sourceFileName)
+	if err != nil {
+		panic(err)
+	}
+	defer fh.Close()
+
+	// seek and limit the reader
+	fh.Seek(args.offset, 0)
+	limitedFh := io.LimitReader(fh, args.componentSize)
+
+	// copy it on up
+	if _, err = io.Copy(objectWriter, limitedFh); err != nil {
+		panic(fmt.Errorf("io.Copy: %v", err))
+	}
+	if err := objectWriter.Close(); err != nil {
+		panic(fmt.Errorf("Writer.Close: %v", err))
+	}
+	log.Printf("uploaded gs://%v/%v\n", object.BucketName(), object.ObjectName())
 }
 
 // doCompose composes the objects in sourceNames into finalObject.
