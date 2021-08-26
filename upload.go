@@ -119,7 +119,7 @@ func CompositeUpload(ctx context.Context, gcs *storage.Client, sourceFile *os.Fi
 			sourceFileName:  sourceFile.Name(),
 		})
 		// next goroutine should use a range beginning at the end of the last
-		offset = offset + componentSize + 1
+		offset = offset + componentSize
 	}
 	componentWG.Wait()
 	log.Printf("component uploads complete\n")
